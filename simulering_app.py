@@ -1,51 +1,62 @@
 import streamlit as st
-import numpy as np
+import yfinance as yf
 import matplotlib.pyplot as plt
+import numpy as np
 
-def calculate_payoff(start_price, leverage, direction, product_type, investment, price_range, stop_loss=None):
-    movement = price_range - start_price if direction == "long" else start_price - price_range
-    if product_type in ["bullbear", "cfds"]:
-        return_pct = (movement / start_price) * leverage
-        return investment * (1 + return_pct)
-    elif product_type == "turbo":
-        if stop_loss is None:
-            stop_loss = start_price * (0.85 if direction == "long" else 1.15)
-        value = []
-        for p in price_range:
-            knocked = (p <= stop_loss) if direction == "long" else (p >= stop_loss)
-            if knocked:
-                value.append(0)
-            else:
-                ret = (movement[np.where(price_range == p)][0] / start_price) * leverage
-                value.append(investment * (1 + ret))
-        return np.array(value)
+st.set_page_config(page_title="Simulering av hävstångsprodukter", page_icon="📊", layout="centered")
 
 st.title("📊 Simulering av hävstångsprodukter")
-st.markdown("Testa hur din position hade utvecklats beroende på produkt, riktning och marknadsrörelse.")
+st.write("Testa hur din position hade utvecklats beroende på produkt, riktning och marknadsrörelse.")
 
-product_type = st.selectbox("Produkttyp", ["bullbear", "turbo", "cfds"])
+# Steg 1: Tillgångsval
+assets = {
+    "Tesla (TSLA)": "TSLA",
+    "Apple (AAPL)": "AAPL",
+    "Bitcoin (BTC-USD)": "BTC-USD",
+    "Ethereum (ETH-USD)": "ETH-USD",
+    "OMX Stockholm 30 (OMXS30.ST)": "^OMX"
+}
+chosen_asset = st.selectbox("Välj tillgång", list(assets.keys()))
+ticker_symbol = assets[chosen_asset]
+
+try:
+    ticker = yf.Ticker(ticker_symbol)
+    current_price = ticker.history(period="1d")["Close"].iloc[-1]
+    st.success(f"Aktuellt pris för {chosen_asset}: {current_price:.2f} USD")
+except Exception as e:
+    st.error("Kunde inte hämta pris för tillgången.")
+    st.stop()
+
+# Steg 2: Parametrar för simulering
+product_type = st.selectbox("Produkttyp", ["bullbear", "minifuture", "warrant"])
 direction = st.selectbox("Riktning", ["long", "short"])
 leverage = st.slider("Hävstång", 1, 20, 5)
-start_price = st.number_input("Startpris (underliggande)", value=100.0)
 investment = st.number_input("Investerat belopp (kr)", value=10000)
-stop_loss = None
-if product_type == "turbo":
-    stop_loss = st.number_input("Stop-loss-nivå", value=start_price * 0.85)
+min_price = st.number_input("Lägsta pris", value=current_price * 0.8)
+max_price = st.number_input("Högsta pris", value=current_price * 1.2)
 
-price_min = st.slider("Lägsta pris", 50, int(start_price), int(start_price * 0.7))
-price_max = st.slider("Högsta pris", int(start_price), 200, int(start_price * 1.3))
-price_range = np.linspace(price_min, price_max, 300)
+# Steg 3: Beräkning
+prices = np.linspace(min_price, max_price, 100)
+if direction == "long":
+    change = (prices - current_price) / current_price
+else:
+    change = (current_price - prices) / current_price
 
-result = calculate_payoff(start_price, leverage, direction, product_type, investment, price_range, stop_loss)
+if product_type == "bullbear":
+    result = investment * (1 + leverage * change)
+elif product_type == "minifuture":
+    result = investment * (1 + leverage * change)  # förenklat
+elif product_type == "warrant":
+    result = investment * (1 + leverage * change)  # förenklat
+else:
+    result = investment
 
-fig, ax = plt.subplots(figsize=(10, 5))
-ax.plot(price_range, result, label=f"{product_type.capitalize()} {direction} x{leverage}", linewidth=2)
-ax.axhline(investment, color='gray', linestyle='--', label="Break-even")
-if product_type == "turbo":
-    ax.axvline(stop_loss, color='red', linestyle=':', label="Stop-loss")
-ax.set_title("Simulerad utveckling")
-ax.set_xlabel("Pris på underliggande tillgång")
-ax.set_ylabel("Positionens värde (kr)")
-ax.grid(True)
+# Steg 4: Visa graf
+fig, ax = plt.subplots()
+ax.plot(prices, result)
+ax.axvline(current_price, color='gray', linestyle='--', label='Startpris')
+ax.set_xlabel("Underliggande pris")
+ax.set_ylabel("Värde på position (kr)")
+ax.set_title("Simulerat resultat")
 ax.legend()
 st.pyplot(fig)
