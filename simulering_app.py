@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import yfinance as yf
 
 # --- Funktion för payoff ---
-def calculate_payoff(start_price, leverage, direction, product_type, investment, price_range, stop_loss=None, days=20, kostnad_per_dag=0.0002):
+def calculate_payoff(start_price, leverage, direction, product_type, investment, price_range, stop_loss=None, days=20, kostnad_per_dag=0.0):
     direction_factor = 1 if direction == "long" else -1
     value = []
 
@@ -14,8 +14,6 @@ def calculate_payoff(start_price, leverage, direction, product_type, investment,
             product_value = investment
             for _ in range(days):
                 product_value *= 1 + leverage * daily_return * direction_factor
-            if product_type == "cfds":
-                product_value *= (1 - kostnad_per_dag) ** days
             value.append(product_value)
 
     elif product_type == "turbo":
@@ -27,48 +25,26 @@ def calculate_payoff(start_price, leverage, direction, product_type, investment,
                 value.append(0)
             else:
                 ret = (p - start_price) / start_price * direction_factor
-                payoff = investment * (1 + leverage * ret)
-                payoff *= (1 - kostnad_per_dag) ** days
-                value.append(payoff)
+                product_value = investment * (1 + leverage * ret)
+                product_value *= (1 - kostnad_per_dag) ** days
+                value.append(product_value)
 
     elif product_type == "minifuture":
-        if stop_loss is None:
-            stop_loss = start_price * (0.85 if direction == "long" else 1.15)
-        if direction == "long":
-            financing_level = start_price - (start_price / leverage)
-        else:
-            financing_level = start_price + (start_price / leverage)
-        for p in price_range:
-            knocked = (p <= stop_loss) if direction == "long" else (p >= stop_loss)
-            if knocked or ((direction == "long" and p <= financing_level) or (direction == "short" and p >= financing_level)):
-                value.append(0)
-            else:
-                try:
-                    if direction == "long":
-                        ratio = (p - financing_level) / (start_price - financing_level)
-                    else:
-                        ratio = (financing_level - p) / (financing_level - start_price)
-                    payoff = investment * ratio * ((1 - kostnad_per_dag) ** days)
-                    value.append(payoff)
-                except ZeroDivisionError:
-                    value.append(0)
+        for end_price in price_range:
+            price = start_price
+            product_value = investment
+            for _ in range(days):
+                daily_return = (end_price / price) ** (1 / days) - 1
+                product_value *= 1 + leverage * daily_return * direction_factor
+                product_value *= 1 - kostnad_per_dag
+                price *= 1 + daily_return
+            value.append(product_value)
 
     elif product_type == "warrant":
         strike_price = start_price * (1.05 if direction == "long" else 0.95)
-        warrant_price = 1.0
-        multiplier = 1
-        num_warrants = investment / warrant_price
-
-        st.session_state["strike_price"] = strike_price
-        st.session_state["num_warrants"] = num_warrants
-
         for p in price_range:
-            if direction == "long":
-                intrinsic = max(p - strike_price, 0)
-            else:
-                intrinsic = max(strike_price - p, 0)
-            total_payoff = num_warrants * intrinsic * multiplier
-            value.append(total_payoff)
+            intrinsic = max((p - strike_price) if direction == "long" else (strike_price - p), 0)
+            value.append(investment * leverage * intrinsic / start_price)
 
     elif product_type == "unlimited_turbo":
         if stop_loss is None:
@@ -79,20 +55,20 @@ def calculate_payoff(start_price, leverage, direction, product_type, investment,
                 value.append(0)
             else:
                 ret = (p - start_price) / start_price * direction_factor
-                payoff = investment * (1 + leverage * ret)
-                payoff *= (1 - kostnad_per_dag) ** days
-                value.append(payoff)
+                product_value = investment * (1 + leverage * ret)
+                product_value *= (1 - kostnad_per_dag) ** days
+                value.append(product_value)
 
     elif product_type == "tracker":
         for p in price_range:
             ret = (p - start_price) / start_price
-            payoff = investment * (1 + ret)
-            payoff *= (1 - kostnad_per_dag) ** days
-            value.append(payoff)
+            product_value = investment * (1 + ret)
+            product_value *= (1 - kostnad_per_dag) ** days
+            value.append(product_value)
 
     return np.array(value)
 
-# --- Dag-för-dag simulering (bullbear) ---
+# --- Funktion för daglig simulering av bullbear ---
 def simulate_day_by_day(start_price, leverage, direction, investment, daily_changes):
     direction_factor = 1 if direction == "long" else -1
     product_value = investment
@@ -106,10 +82,11 @@ def simulate_day_by_day(start_price, leverage, direction, investment, daily_chan
         underlying.append(price)
     return values, underlying
 
-# --- UI ---
+# --- Streamlit-gränssnitt ---
 st.set_page_config(page_title="Simulering av hävstångsprodukter", layout="centered")
 st.title("📊 Simulering av hävstångsprodukter")
 
+# Tillgångar
 tickers = {
     "Tesla (TSLA)": "TSLA",
     "Apple (AAPL)": "AAPL",
@@ -120,6 +97,7 @@ tickers = {
 selected_asset = st.selectbox("Välj tillgång", list(tickers.keys()))
 ticker_symbol = tickers[selected_asset]
 
+# Pris
 try:
     ticker_data = yf.Ticker(ticker_symbol).history(period="1d")
     current_price = round(ticker_data["Close"].iloc[-1], 2)
@@ -128,39 +106,47 @@ except:
     st.warning("Kunde inte hämta pris. Ange manuellt:")
     current_price = st.number_input("Startpris", value=100.0)
 
+# Inputs
 product_type = st.selectbox("Produkttyp", ["bullbear", "turbo", "cfds", "minifuture", "warrant", "unlimited_turbo", "tracker"])
 direction = st.selectbox("Riktning", ["long", "short"])
 investment = st.number_input("Investerat belopp (kr)", value=10000)
 
-# Göm hävstång för tracker
-if product_type == "tracker":
-    leverage = 1
-else:
+# Visa hävstång om det behövs
+if product_type != "warrant":
     leverage = st.slider("Hävstång", 1, 20, 5)
+else:
+    leverage = 1
 
-# Lägg till justerbar daglig kostnad
-kostnad_per_dag = st.number_input("Daglig kostnad för att hålla produkten (%)", value=0.02, step=0.01) / 100
-st.caption("Ex: 0.02 % motsvarar ca 5 % årlig kostnad – vanligt för turbo/minifuture")
+# Kostnad
+if product_type not in ["bullbear", "warrant"]:
+    kostnad_per_dag = st.number_input("Daglig kostnad för att hålla produkten (%)", value=0.02, step=0.01) / 100
+    st.caption("Ex: 0.02 % motsvarar ca 5 % årlig kostnad – vanligt för turbo/minifuture")
+else:
+    kostnad_per_dag = 0
 
-# Visa payoff-grafen
+# Simulering
+days = st.slider("Antal dagar i payoff-simuleringen", 1, 60, 20)
+prisförändring_pct = st.slider("Prisförändring (%)", -50, 100, 0)
+end_price = current_price * (1 + prisförändring_pct / 100)
+price_range = np.linspace(current_price * 0.6, current_price * 1.4, 100)
+
+# Stop-loss om relevant
+stop_loss = None
+if product_type in ["turbo", "unlimited_turbo"]:
+    stop_loss = st.number_input("Knock-out nivå", value=round(current_price * 0.85, 2))
+
+# Strike-pris för warrant
+if product_type == "warrant":
+    strike_price = current_price * (1.05 if direction == "long" else 0.95)
+    antal_warranter = int(investment / (strike_price * 0.1))
+    st.info(f"Strike-pris: {strike_price:.2f} USD  \nAntal warranter: {antal_warranter}")
+
+# Kör payoff-simulering
 if product_type != "bullbear":
-    days = st.slider("Antal dagar i payoff-simuleringen", 1, 60, 20)
-    prisförändring = st.slider("Prisförändring (%)", -50, 100, (0, 20))
-    min_price = current_price * (1 + prisförändring[0] / 100)
-    max_price = current_price * (1 + prisförändring[1] / 100)
-    price_range = np.linspace(min_price, max_price, 100)
-
-    stop_loss = None
-    if product_type in ["turbo", "unlimited_turbo", "minifuture"]:
-        stop_loss = st.number_input("Knock-out nivå", value=round(0.85 * current_price, 2))
-
     payoffs = calculate_payoff(
         current_price, leverage, direction, product_type,
         investment, price_range, stop_loss, days, kostnad_per_dag
     )
-
-    if product_type == "warrant" and "strike_price" in st.session_state:
-        st.info(f"Strike-pris: {st.session_state['strike_price']:.2f} USD\nAntal warranter: {st.session_state['num_warrants']:.0f}")
 
     fig, ax = plt.subplots()
     ax.plot(price_range, payoffs, label="Utveckling", color="blue")
@@ -171,7 +157,7 @@ if product_type != "bullbear":
     ax.legend()
     st.pyplot(fig)
 
-# Dag-för-dag ombalansering (bullbear)
+# Bullbear dag-för-dag
 if product_type == "bullbear":
     st.markdown("### 📅 Dag-för-dag simulering (Bull/Bear)")
     num_days = st.slider("Antal dagar att simulera", 1, 5, 3, key="sim_days")
@@ -179,6 +165,7 @@ if product_type == "bullbear":
     for i in range(num_days):
         change = st.number_input(f"Prisförändring dag {i + 1} (%)", value=0.0, key=f"dag_{i+1}")
         daily_changes.append(change)
+
     values, underlying_values = simulate_day_by_day(current_price, leverage, direction, investment, daily_changes)
 
     fig2, ax1 = plt.subplots()
