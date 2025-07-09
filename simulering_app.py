@@ -61,17 +61,21 @@ def calculate_payoff(start_price, leverage, direction, product_type, investment,
 st.set_page_config(page_title="Simulering av hävstångsprodukter", layout="centered")
 st.title("📊 Simulering av hävstångsprodukter")
 
+# ✅ Utökat tickerbibliotek
 tickers = {
-    "Tesla (TSLA)": "TSLA",
-    "Apple (AAPL)": "AAPL",
-    "Nvidia (NVDA)": "NVDA",
-    "S&P 500 (SPY)": "SPY",
-    "Bitcoin (BTC-USD)": "BTC-USD"
+    "Tesla (TSLA)": "TSLA", "Apple (AAPL)": "AAPL", "Nvidia (NVDA)": "NVDA", "Amazon (AMZN)": "AMZN",
+    "Google (GOOGL)": "GOOGL", "Meta (META)": "META", "Microsoft (MSFT)": "MSFT",
+    "OMXS30": "^OMX", "S&P 500 (SPY)": "SPY", "Nasdaq 100 (NDX)": "^NDX", "Dow Jones (DJI)": "^DJI",
+    "Bitcoin (BTC)": "BTC-USD", "Ethereum (ETH)": "ETH-USD", "Guld (Gold)": "GC=F", "Olja (Brent)": "BZ=F"
 }
-selected_asset = st.selectbox("Välj tillgång", list(tickers.keys()))
-ticker_symbol = tickers[selected_asset]
 
-# Pris
+# 🔍 Sökfunktion
+search_query = st.text_input("Sök tillgång", "").lower()
+filtered_tickers = {k: v for k, v in tickers.items() if search_query in k.lower()} or tickers
+selected_asset = st.selectbox("Välj tillgång", list(filtered_tickers.keys()))
+ticker_symbol = filtered_tickers[selected_asset]
+
+# 📈 Pris
 try:
     ticker_data = yf.Ticker(ticker_symbol).history(period="1d")
     current_price = round(ticker_data["Close"].iloc[-1], 2)
@@ -79,6 +83,7 @@ try:
 except:
     current_price = st.number_input("Startpris", value=100.0)
 
+# ➕ Inputs
 product_type = st.selectbox("Produkttyp", ["bullbear", "turbo", "cfds", "minifuture", "warrant", "unlimited_turbo", "tracker"])
 direction = st.selectbox("Riktning", ["long", "short"])
 investment = st.number_input("Investerat belopp (kr)", value=10000)
@@ -108,15 +113,15 @@ if product_type == "warrant":
     antal_warranter = int(investment / (strike_price * 0.1))
     st.info(f"Strike-pris: {strike_price:.2f} USD  \nAntal warranter: {antal_warranter}")
 
+# 🧮 Beräkningar
 payoffs_med_avgift = calculate_payoff(current_price, leverage, direction, product_type, investment, price_range, stop_loss, days, kostnad_per_dag)
 payoffs_utan_avgift = calculate_payoff(current_price, leverage, direction, product_type, investment, price_range, stop_loss, days, 0)
 
-# 🧠 Beräkna faktisk skillnad i kronor
 förlust_kr = np.median(payoffs_utan_avgift - payoffs_med_avgift)
 if kostnad_per_dag > 0:
     st.info(f"💡 Avgiften minskar slutvärdet med i snitt ca **{förlust_kr:.0f} kr** jämfört med en produkt utan avgift.")
 
-# 📈 Graf
+# 📊 Graf
 fig, ax = plt.subplots()
 ax.plot(price_range, payoffs_med_avgift, label="Utveckling (med avgift)", color="blue")
 ax.axhline(y=investment, color='gray', linestyle='--', label="Break-even")
@@ -124,4 +129,52 @@ ax.set_title("Resultat beroende på prisrörelse")
 ax.set_xlabel("Underliggande pris")
 ax.set_ylabel("Värde av position (kr)")
 ax.legend()
-st.pyplot(fig)
+if product_type != "bullbear":
+    st.pyplot(fig)
+
+# 🗓️ Dag-för-dag simulering (Bull/Bear)
+if product_type == "bullbear":
+    st.markdown("### 📅 Dag-för-dag simulering")
+    num_days = st.slider("Antal dagar att simulera", 1, 5, 3, key="sim_days")
+    daily_changes = []
+    for i in range(num_days):
+        change = st.number_input(f"Prisförändring dag {i + 1} (%)", value=0.0, key=f"dag_{i+1}")
+        daily_changes.append(change)
+
+    # Funktion för att simulera
+    def simulate_day_by_day(start_price, leverage, direction, investment, daily_changes):
+        direction_factor = 1 if direction == "long" else -1
+        product_value = investment
+        price = start_price
+        values = [product_value]
+        underlying = [price]
+        for change_pct in daily_changes:
+            price *= 1 + change_pct / 100
+            product_value *= 1 + direction_factor * leverage * (change_pct / 100)
+            values.append(product_value)
+            underlying.append(price)
+        return values, underlying
+
+    values, underlying_values = simulate_day_by_day(current_price, leverage, direction, investment, daily_changes)
+
+    # 📈 Graf för daglig simulering
+    fig2, ax1 = plt.subplots()
+    ax1.plot(range(len(values)), values, marker='o', label="Produktvärde", color="blue")
+    ax1.set_ylabel("Produktvärde (kr)", color="blue")
+    ax1.tick_params(axis='y', labelcolor='blue')
+
+    ax2 = ax1.twinx()
+    ax2.plot(range(len(underlying_values)), underlying_values, marker='x', linestyle='--', label="Underliggande pris", color="orange")
+    ax2.set_ylabel("Underliggande pris", color="orange")
+    ax2.tick_params(axis='y', labelcolor='orange')
+
+    ax1.set_title("Daglig utveckling av position vs. underliggande")
+    ax1.set_xlabel("Dag")
+    fig2.tight_layout()
+    st.pyplot(fig2)
+
+    # Dagliga värden
+    st.markdown("### 🧾 Dagliga värden")
+    for i, (pv, up) in enumerate(zip(values, underlying_values)):
+        st.write(f"Dag {i}: Produkt = {pv:.2f} kr | Underliggande = {up:.2f}")
+
